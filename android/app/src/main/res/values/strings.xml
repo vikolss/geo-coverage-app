@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">GeoCover</string>
+    <string name="title_activity_main">GeoCover</string>
+    <string name="package_name">com.geocover.app</string>
+    <string name="custom_url_scheme">com.geocover.app</string>
+</resources>
