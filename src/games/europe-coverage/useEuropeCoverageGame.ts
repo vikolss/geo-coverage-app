@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_DIFFICULTY,
   DEFAULT_POPULATION_FILTER,
@@ -16,13 +16,32 @@ import type {
   GuessEntry,
   RegionKey
 } from "@/games/europe-coverage/types";
-import europeDataset from "@/games/europe-coverage/data/europe-cities-geonames.json";
-import usDataset from "@/games/europe-coverage/data/us-cities-census.json";
 
-const DATASETS: Record<RegionKey, CityRecord[]> = {
-  europe: europeDataset as CityRecord[],
-  us: usDataset as CityRecord[]
-};
+// Each dataset is a separate Vite chunk, loaded on demand when the game is opened.
+// Module-level cache ensures each file is fetched at most once per session.
+const datasetCache = new Map<RegionKey, CityRecord[]>();
+
+async function loadDataset(region: RegionKey): Promise<CityRecord[]> {
+  const cached = datasetCache.get(region);
+  if (cached) return cached;
+
+  let mod: { default: unknown };
+  switch (region) {
+    case "europe":       mod = await import("@/games/europe-coverage/data/europe-cities.json"); break;
+    case "us":           mod = await import("@/games/europe-coverage/data/us-cities.json"); break;
+    case "canada":       mod = await import("@/games/europe-coverage/data/canada-cities.json"); break;
+    case "asia":         mod = await import("@/games/europe-coverage/data/asia-cities.json"); break;
+    case "africa":       mod = await import("@/games/europe-coverage/data/africa-cities.json"); break;
+    case "southAmerica": mod = await import("@/games/europe-coverage/data/south-america-cities.json"); break;
+    case "centralAmerica": mod = await import("@/games/europe-coverage/data/central-america-cities.json"); break;
+    case "oceania":      mod = await import("@/games/europe-coverage/data/oceania-cities.json"); break;
+    case "world":        mod = await import("@/games/europe-coverage/data/world-cities.json"); break;
+  }
+
+  const data = mod.default as CityRecord[];
+  datasetCache.set(region, data);
+  return data;
+}
 
 const INITIAL_STATE: EuropeCoverageState = {
   isActive: false,
@@ -44,8 +63,8 @@ function getRegionLabel(region: RegionKey): string {
   return REGION_OPTIONS.find((option) => option.key === region)?.label ?? region;
 }
 
-function filterCities(region: RegionKey, minPopulation: number): CityRecord[] {
-  return DATASETS[region].filter((city) => city.population >= minPopulation);
+function filterCities(cities: CityRecord[], minPopulation: number): CityRecord[] {
+  return cities.filter((city) => city.population >= minPopulation);
 }
 
 function createInitialState(region: RegionKey): EuropeCoverageState {
@@ -58,10 +77,22 @@ function createInitialState(region: RegionKey): EuropeCoverageState {
 
 export function useEuropeCoverageGame(region: RegionKey) {
   const [state, setState] = useState<EuropeCoverageState>(() => createInitialState(region));
+  const [dataset, setDataset] = useState<CityRecord[] | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setDataset(null);
+    loadDataset(region).then((data) => {
+      if (active) setDataset(data);
+    });
+    return () => {
+      active = false;
+    };
+  }, [region]);
 
   const activeCities = useMemo(
-    () => filterCities(state.activeRegion, state.activeMinPopulation),
-    [state.activeRegion, state.activeMinPopulation]
+    () => (dataset ? filterCities(dataset, state.activeMinPopulation) : []),
+    [dataset, state.activeMinPopulation]
   );
   const store = useMemo(() => new CityStore(activeCities), [activeCities]);
 
@@ -120,11 +151,13 @@ export function useEuropeCoverageGame(region: RegionKey) {
   );
 
   function startGame(): void {
+    if (!dataset) return;
+
     const selectedDifficulty =
       DIFFICULTY_OPTIONS.find((option) => option.key === state.difficulty) ??
       DEFAULT_DIFFICULTY;
 
-    const filtered = filterCities(region, state.selectedMinPopulation);
+    const filtered = filterCities(dataset, state.selectedMinPopulation);
     if (filtered.length === 0) {
       setState((previous) => ({
         ...previous,
@@ -187,24 +220,23 @@ export function useEuropeCoverageGame(region: RegionKey) {
   }
 
   function submitGuess(): void {
-    if (!state.isActive) {
-      setState((previous) => ({
-        ...previous,
-        statusMessage: "Start a game first."
-      }));
-      return;
-    }
+    if (!dataset) return;
 
     const city = store.findByName(state.inputValue);
     if (!city) {
       setState((previous) => ({
         ...previous,
-        statusMessage: `No city match for \"${state.inputValue.trim()}\".`
+        statusMessage: `No city match for "${state.inputValue.trim()}".`
       }));
       return;
     }
 
-    if (guessedSet.has(city.id)) {
+    // When the game isn't active, auto-start a fresh game before processing the guess.
+    const isAutoStarting = !state.isActive;
+    const effectiveGuessedSet = isAutoStarting ? new Set<number>() : guessedSet;
+    const effectiveCoveredSet = isAutoStarting ? new Set<number>() : coveredSet;
+
+    if (effectiveGuessedSet.has(city.id)) {
       setState((previous) => ({
         ...previous,
         statusMessage: `${city.name} was already entered.`
@@ -214,15 +246,15 @@ export function useEuropeCoverageGame(region: RegionKey) {
 
     const newlyCovered = store
       .findWithinRadius(city, state.activeRadiusKm)
-      .filter((coveredCity) => !coveredSet.has(coveredCity.id));
+      .filter((coveredCity) => !effectiveCoveredSet.has(coveredCity.id));
 
-    const nextCoveredSet = new Set<number>(coveredSet);
+    const nextCoveredSet = new Set<number>(effectiveCoveredSet);
     for (const coveredCity of newlyCovered) {
       nextCoveredSet.add(coveredCity.id);
     }
 
     const nextCoveredIds = Array.from(nextCoveredSet);
-    const nextGuessedIds = [...state.guessedCityIds, city.id];
+    const nextGuessedIds = [...Array.from(effectiveGuessedSet), city.id];
     const isWon = nextCoveredIds.length === totalCities;
 
     const nextHistoryEntry: GuessEntry = {
@@ -233,10 +265,17 @@ export function useEuropeCoverageGame(region: RegionKey) {
     };
 
     setState((previous) => ({
-      ...previous,
+      ...INITIAL_STATE,
+      isActive: true,
+      difficulty: previous.difficulty,
+      selectedRegion: region,
+      selectedMinPopulation: previous.selectedMinPopulation,
+      activeRegion: region,
+      activeMinPopulation: previous.selectedMinPopulation,
+      activeRadiusKm: previous.activeRadiusKm,
       guessedCityIds: nextGuessedIds,
       coveredCityIds: nextCoveredIds,
-      guessHistory: [nextHistoryEntry, ...previous.guessHistory],
+      guessHistory: [nextHistoryEntry, ...(isAutoStarting ? [] : previous.guessHistory)],
       inputValue: "",
       isWon,
       statusMessage: isWon
@@ -255,6 +294,7 @@ export function useEuropeCoverageGame(region: RegionKey) {
 
   return {
     state,
+    isLoadingData: dataset === null,
     guessedCities,
     coveredCities,
     completedCountryCodes,

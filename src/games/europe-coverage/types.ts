@@ -17,7 +17,16 @@ export interface GuessEntry {
 }
 
 export type DifficultyKey = "easy" | "medium" | "hard" | "expert";
-export type RegionKey = "europe" | "us";
+export type RegionKey =
+  | "europe"
+  | "us"
+  | "canada"
+  | "asia"
+  | "africa"
+  | "southAmerica"
+  | "centralAmerica"
+  | "oceania"
+  | "world";
 
 export interface DifficultyOption {
   key: DifficultyKey;

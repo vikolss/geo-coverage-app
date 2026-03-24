@@ -4,13 +4,16 @@ import { defineConfig, loadEnv } from "vite";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const isAndroid = mode === "android";
+  const apiKey = isAndroid
+    ? (env.GOOGLE_MAPS_API_KEY_ANDROID ?? env.GOOGLE_MAPS_API_KEY ?? "")
+    : (env.GOOGLE_MAPS_API_KEY ?? "");
 
   return {
+    base: isAndroid ? "./" : "/",
     plugins: [react()],
     define: {
-      "import.meta.env.GOOGLE_MAPS_API_KEY": JSON.stringify(
-        env.GOOGLE_MAPS_API_KEY ?? ""
-      )
+      "import.meta.env.GOOGLE_MAPS_API_KEY": JSON.stringify(apiKey)
     },
     resolve: {
       alias: {
